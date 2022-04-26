@@ -20,6 +20,7 @@ from torch import nn, optim
 import torch
 import torchvision
 import torchvision.transforms as transforms
+from dataset import UnlabeledDataset
 
 parser = argparse.ArgumentParser(description='Barlow Twins Training')
 parser.add_argument('data', type=Path, metavar='DIR',
@@ -45,7 +46,7 @@ parser.add_argument('--print-freq', default=100, type=int, metavar='N',
 parser.add_argument('--checkpoint-dir', default='./checkpoint/', type=Path,
                     metavar='DIR', help='path to checkpoint directory')
 
-
+"""
 def main():
     args = parser.parse_args()
     args.ngpus_per_node = torch.cuda.device_count()
@@ -68,8 +69,42 @@ def main():
         args.dist_url = 'tcp://localhost:58472'
         args.world_size = args.ngpus_per_node
     torch.multiprocessing.spawn(main_worker, (args,), args.ngpus_per_node)
+"""
 
+def main():
+    args = parser.parse_args()
+    args.ngpus_per_node = torch.cuda.device_count()
+    
+    # Initialize the distributed environment
+    args.gpu = 0
+    args.world_size = 1
+    args.local_rank = 0
+    args.distributed = int(os.getenv('WORLD_SIZE', 1)) > 1
+    args.rank = int(os.getenv('RANK', 0))
 
+    if "SLURM_NNODES" in os.environ:
+        args.local_rank = args.rank % torch.cuda.device_count()
+        print(f"SLURM tasks/nodes: {os.getenv('SLURM_NTASKS', 1)}/{os.getenv('SLURM_NNODES', 1)}")
+    elif "WORLD_SIZE" in os.environ:
+        args.local_rank = int(os.getenv('LOCAL_RANK', 0))
+
+    args.gpu = args.local_rank
+    torch.cuda.set_device(args.gpu)
+    torch.distributed.init_process_group(backend="nccl", init_method="env://", world_size=args.world_size, rank=args.rank)
+    #args.world_size = torch.distributed.get_world_size()
+    #assert int(os.getenv('WORLD_SIZE', 1)) == args.world_size
+    print(f"Initializing the environment with {args.world_size} processes | Current process rank: {args.local_rank}")
+
+    if args.rank == 0:
+        args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        stats_file = open(args.checkpoint_dir / 'stats.txt', 'a', buffering=1)
+        print(' '.join(sys.argv))
+        print(' '.join(sys.argv), file=stats_file)
+
+    gpu = args.gpu
+    torch.backends.cudnn.benchmark = True
+
+"""
 def main_worker(gpu, args):
     args.rank += gpu
     torch.distributed.init_process_group(
@@ -84,6 +119,7 @@ def main_worker(gpu, args):
 
     torch.cuda.set_device(gpu)
     torch.backends.cudnn.benchmark = True
+"""
 
     model = BarlowTwins(args).cuda(gpu)
     model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -110,7 +146,8 @@ def main_worker(gpu, args):
     else:
         start_epoch = 0
 
-    dataset = torchvision.datasets.ImageFolder(args.data / 'train', Transform())
+    #dataset = torchvision.datasets.ImageFolder(args.data / 'train', Transform())
+    dataset = UnlabeledDataset(args.data, transform=Transform())
     sampler = torch.utils.data.distributed.DistributedSampler(dataset)
     assert args.batch_size % args.world_size == 0
     per_device_batch_size = args.batch_size // args.world_size
@@ -122,7 +159,7 @@ def main_worker(gpu, args):
     scaler = torch.cuda.amp.GradScaler()
     for epoch in range(start_epoch, args.epochs):
         sampler.set_epoch(epoch)
-        for step, ((y1, y2), _) in enumerate(loader, start=epoch * len(loader)):
+        for step, (y1, y2) in enumerate(loader, start=epoch * len(loader)):
             y1 = y1.cuda(gpu, non_blocking=True)
             y2 = y2.cuda(gpu, non_blocking=True)
             adjust_learning_rate(args, optimizer, loader, step)

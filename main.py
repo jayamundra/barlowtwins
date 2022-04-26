@@ -104,23 +104,6 @@ def main():
     gpu = args.gpu
     torch.backends.cudnn.benchmark = True
 
-"""
-def main_worker(gpu, args):
-    args.rank += gpu
-    torch.distributed.init_process_group(
-        backend='nccl', init_method=args.dist_url,
-        world_size=args.world_size, rank=args.rank)
-
-    if args.rank == 0:
-        args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        stats_file = open(args.checkpoint_dir / 'stats.txt', 'a', buffering=1)
-        print(' '.join(sys.argv))
-        print(' '.join(sys.argv), file=stats_file)
-
-    torch.cuda.set_device(gpu)
-    torch.backends.cudnn.benchmark = True
-"""
-
     model = BarlowTwins(args).cuda(gpu)
     model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     param_weights = []
